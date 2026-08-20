@@ -39,7 +39,7 @@ The server reads:
 | variable | default | meaning |
 |---|---|---|
 | `FORGE` | `https://git.hanzo.ai` | where our source lives |
-| `FORGE_TOKEN` | — | forge credential; only for source the forge will not serve anonymously. Empty is a working configuration |
+| `FORGE_TOKEN` | — | forge credential. Required: the forge asks every reader to sign in, public repositories included |
 | `NAMESPACES` | `github.com/hanzoai` | module prefixes this proxy answers for |
 | `UNLOGGED` | *(empty)* | paths the public checksum log has never seen |
 | `UPSTREAM` | `https://proxy.golang.org` | where everything else resolves |
@@ -74,6 +74,6 @@ while the log remembers what was published under the same name, so a forge copy
 whose bytes disagree with the published tag is caught here and nowhere else. The
 caller's `go.sum` pins everything a second time.
 
-**Credentials stay in.** When there is a forge token it reaches git through the
-environment of each child process — never a config file, never an image layer —
-and is removed from any text on its way to a log or a response.
+**Credentials stay in.** The forge token reaches git through the environment of
+each child process — never a config file, never an image layer — and is removed
+from any text on its way to a log or a response.

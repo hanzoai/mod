@@ -68,19 +68,32 @@ repositories are published; when it is empty for good, delete the variable.
 "bypass the proxy AND the log", and bypassing the proxy is what sends the
 toolchain to github.com. A test asserts the server never sets it.
 
-## The forge credential is also a transition value
+## The forge credential is structural, and going open source does not change it
 
-Public forge repositories are readable anonymously — verified, not assumed:
+The forge asks every reader to sign in, public repositories included:
 
 ```sh
-GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://git.hanzo.ai/hanzoai/ci.git
+curl -o /dev/null -w '%{http_code}\n' \
+  https://git.hanzo.ai/hanzoai/ci.git/info/refs?service=git-upload-pack   # 401
 ```
 
-So `FORGE_TOKEN` is only needed for source the forge will not serve
-anonymously, and empty is a working configuration. The URL rewrite happens with
-or without it — reaching the forge and being allowed to read a given repository
-there are different questions, and dropping the rewrite would send our names
-back to github.com.
+So `FORGE_TOKEN` is required, and it stays required however much of the estate
+is published. Publishing changes who may read a repository on GitHub; it does
+not change that this forge authenticates.
+
+An earlier note here claimed the opposite, from a `git -c credential.helper=`
+check that quietly kept reading the system and global helpers. Verify anonymity
+with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`, or with plain
+curl against `info/refs`, which has no helper to inherit.
+
+The code still tolerates an empty token — it degrades to a plain rewrite rather
+than embedding an empty credential in a URL — because the rewrite is what makes
+our names resolve from the forge at all, and dropping it would send them back to
+github.com. That is worth keeping as behaviour. It is not a deployment mode.
+
+In the cluster the value comes from KMS at `hanzo:/deploy/FORGE_TOKEN`, synced
+by the `git-hanzo-ai-token-kms-sync` KMSSecret into `git-hanzo-ai-token/token`.
+It carries write scope and only needs read.
 
 ## Retention has a limit, and it is stated in the README
 
