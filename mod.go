@@ -1,27 +1,33 @@
 // Package main serves the Go module proxy protocol for modules whose source
 // lives on our forge.
 //
-// A module path is identity, not an address: `module github.com/hanzoai/o11y`
-// is the name every dependent's go.mod writes down, and renaming it would
-// rewrite every dependent. The source, meanwhile, lives on git.hanzo.ai. A
-// proxy is where those two facts meet — it answers for the name and reads from
-// the forge, so a build resolves the module it already names without ever
-// dialing the host in the name.
+// This exists for retention and authority. It is not a privacy mechanism, and
+// nothing here should be read as one: whether a module is public changes who
+// may read it, not who answers for its name or how long it stays reachable.
 //
-// It answers for every module, not only ours. A module in one of our
+// AUTHORITY. A module path is identity, not an address: `module
+// github.com/hanzoai/o11y` is the name every dependent's go.mod writes down,
+// and renaming it would rewrite every dependent. The source, meanwhile, lives
+// on git.hanzo.ai. A proxy is where those two facts meet — it answers for the
+// name and reads from the forge, so a build resolves the module it already
+// names without dialing the host in the name. The name still says github.com;
+// the answer no longer has to come from there.
+//
+// RETENTION. It answers for every module, not only ours. A module in one of our
 // namespaces resolves from the forge; anything else resolves from the public
 // proxy. Both land in one module cache and stay there, which is the difference
-// between depending on a copy someone else keeps and holding our own: a module
-// whose origin disappears is still here. That is not hypothetical —
-// github.com/hanzoai/s3-go is a dependency of the forge's own build and its
-// GitHub repository no longer exists, while the forge holds the source and its
-// tags.
+// between depending on a copy someone else keeps and holding our own.
+// github.com/hanzoai/s3-go is the proof: it is a dependency of the forge's own
+// build, its GitHub repository no longer exists, and builds kept working only
+// because a cache elsewhere happened to still hold it. The forge holds the
+// source and its tags, so here it resolves because we decided it does.
 //
-// The guarantee has a shape worth stating: for our namespaces it is total,
-// because the forge is the source rather than a copy of one. For a third-party
-// module it covers what we have already served — this cache does not evict, so
-// a module that came through once remains available — and nothing we have never
-// fetched.
+// The guarantee has a shape worth stating, and the two halves are not equal.
+// For our namespaces it is total, because the forge is the source rather than a
+// copy of one. For a third-party module it covers WHAT WE HAVE ALREADY SERVED —
+// this cache does not evict, so a module that came through once remains
+// available — and nothing we have never fetched. A dependency added tomorrow
+// from an origin that vanishes tonight is not covered by anything here.
 //
 // Protocol: https://go.dev/ref/mod#goproxy-protocol
 package main
@@ -51,8 +57,15 @@ type Proxy struct {
 	Forge string
 	// Upstream resolves everything outside our namespaces.
 	Upstream string
-	// Token authenticates to the forge. It is passed to git through the
-	// environment of each child process and is never written to a file.
+	// Unlogged are the module paths the public checksum log cannot vouch for,
+	// because it has never seen them. Everything else — ours included — is
+	// checked against that log, so this list is empty until something needs to
+	// be in it, and shrinks back to empty as its entries become published.
+	Unlogged []string
+	// Token authenticates to the forge, and is only needed for source the forge
+	// does not serve anonymously. It is passed to git through the environment of
+	// each child process and is never written to a file. Empty is a working
+	// configuration.
 	Token string
 	// Dir is the scratch module the toolchain resolves in, and the HOME those
 	// children see.
@@ -143,14 +156,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ours {
-		// A public module we could not resolve. 404 is this protocol's "ask the
-		// next proxy", and for a public path there is nothing to protect.
+		// Somebody else's module we could not resolve. 404 is this protocol's
+		// "ask the next proxy", and for a module we are not authoritative for
+		// that is the right answer — let the walk continue.
 		http.NotFound(w, r)
 		return
 	}
-	// Inside our namespaces a 404 would send the go command onward carrying the
-	// module path, and onward is public. Any other status ends the walk, so a
-	// module we could not resolve stays a module nobody else hears about.
+	// Inside our namespaces 404 is the one answer that must never be given, and
+	// the reason has nothing to do with whether the module is public.
+	//
+	// 404 means "ask the next proxy". The next proxy resolves
+	// github.com/hanzoai/x the way its name reads — from github.com. So a 404
+	// here does not fail; it silently hands resolution back to the exact host
+	// this service exists so we need not depend on, and the build goes GREEN
+	// having used it. A false success is worse than a failure, because nobody
+	// looks at it.
+	//
+	// Any other status ends the walk. If the forge cannot answer for a name we
+	// are authoritative for, that is a fact the build should hear.
 	http.Error(w, "resolve "+req.module+": "+err.Error(), http.StatusBadGateway)
 }
 
@@ -239,30 +262,38 @@ func (p *Proxy) env(ours bool) []string {
 	if ours {
 		from = "direct"
 	}
-	ns := strings.Join(p.Namespaces, ",")
 	env := []string{
 		"HOME=" + p.Dir,
 		"PATH=" + os.Getenv("PATH"),
 		"GOMODCACHE=" + p.Cache,
 		"GOFLAGS=-mod=mod",
 		"GOPROXY=" + from,
-		// The public checksum database cannot have seen these modules and asking
-		// it would publish the path. The caller's go.sum still pins every one of
-		// them, so this drops a lookup, not the verification.
-		"GOPRIVATE=" + ns,
-		"GONOSUMDB=" + ns,
+		// Everything is checked against the public transparency log, ours
+		// included. That check is worth MORE for our modules than for anyone
+		// else's: this is the one place that reads the forge while the log
+		// remembers what was published under the same name, so bytes that
+		// disagree are caught here and nowhere else.
+		//
+		// Unlogged is the exception list, and it is empty by default. A module
+		// the log has never seen cannot be checked against it, and asking fails
+		// the fetch — so an entry here says "the log has nothing to say about
+		// this name", not "do not verify it". The caller's go.sum still pins it
+		// either way.
+		"GONOSUMDB=" + strings.Join(p.Unlogged, ","),
 		// Resolve with the toolchain in the image. Fetching another one would
 		// need the network we are the network for.
 		"GOTOOLCHAIN=local",
 	}
-	// Point git at the forge for the length of this process. Config in the
-	// environment rather than a file keeps the credential out of the image, out
-	// of any layer, and out of every other process on the box.
+	// Point git at the forge for the length of this process. This rewrite IS the
+	// authority: it is what makes a name that reads github.com resolve from the
+	// forge. Config in the environment rather than a file keeps the credential
+	// out of the image, out of any layer, and out of every other process on the
+	// box.
 	var i int
 	for _, n := range p.Namespaces {
 		org := n[strings.LastIndex(n, "/")+1:]
 		env = append(env,
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s/%s/.insteadOf", i, p.forgeWithToken(), org),
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s/%s/.insteadOf", i, p.dial(), org),
 			fmt.Sprintf("GIT_CONFIG_VALUE_%d=https://%s/", i, n),
 		)
 		i++
@@ -271,8 +302,14 @@ func (p *Proxy) env(ours bool) []string {
 	return env
 }
 
-// forgeWithToken is the forge URL git dials, carrying the credential.
-func (p *Proxy) forgeWithToken() string {
+// dial is the forge URL git is pointed at, carrying the credential when there is
+// one. The rewrite happens either way — reaching the forge is not the same
+// question as being allowed to read a particular repository there, and source
+// the forge serves anonymously needs no credential to reach.
+func (p *Proxy) dial() string {
+	if p.Token == "" {
+		return p.Forge
+	}
 	host, _ := strings.CutPrefix(p.Forge, "https://")
 	return "https://x:" + p.Token + "@" + host
 }

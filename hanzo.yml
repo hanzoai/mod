@@ -21,8 +21,9 @@ test:
   - name: go-test
     # The tests that matter here answer one question: what does this proxy tell
     # the go command to do when it cannot resolve something. A 404 inside our
-    # namespaces sends the go command to the next proxy carrying the module
-    # path, and the next proxy is public — so the boundary is asserted, not
+    # namespaces sends the go command to the next proxy, which resolves the name
+    # from github.com — so the build would go green having used the host this
+    # service exists to make unnecessary. That boundary is asserted, not
     # assumed. They need no network: the fixture points at a forge that cannot
     # resolve, which is exactly the failing case under test.
     run: |

@@ -17,10 +17,11 @@ func main() {
 	addr := env("ADDR", ":8080")
 	root := env("ROOT", "/var/lib/mod")
 
-	names := strings.Split(env("NAMESPACES", "github.com/hanzoai"), ",")
-	for i, n := range names {
-		names[i] = strings.Trim(strings.TrimSpace(n), "/")
-	}
+	names := paths(env("NAMESPACES", "github.com/hanzoai"))
+	// Empty by default: the public checksum log is asked about everything unless
+	// a name is listed here, and a name belongs here only while the log has
+	// never seen it.
+	unlogged := paths(os.Getenv("UNLOGGED"))
 
 	dir := filepath.Join(root, "scratch")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -36,6 +37,7 @@ func main() {
 		Namespaces: names,
 		Forge:      strings.TrimSuffix(forge, "/"),
 		Upstream:   env("UPSTREAM", "https://proxy.golang.org"),
+		Unlogged:   unlogged,
 		Token:      token,
 		Dir:        dir,
 		Cache:      filepath.Join(root, "cache"),
@@ -58,4 +60,17 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// paths splits a comma-separated list of module paths. An empty string is an
+// empty list, not a list holding one empty path — and an empty path would match
+// every module, which is the whole list's meaning inverted.
+func paths(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.Trim(strings.TrimSpace(p), "/"); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
