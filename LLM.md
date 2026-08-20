@@ -3,60 +3,101 @@
 The Go module proxy. Read `README.md` first for what it is and how it is
 configured; this file holds the decisions behind it.
 
-## Why this exists rather than the alternatives
+## What it is for, after the OSS decision
 
-Our private Go modules declare github paths, so the toolchain took a direct VCS
-fetch to github.com and needed a credential valid there. Every GitHub credential
-in the estate is a personal OAuth token. Three ways out were on the table:
+This was first built to keep a GitHub credential out of builds that needed
+private modules. The estate is going fully open source, so that problem is
+ending rather than being solved, and the justification narrows to the two
+reasons that never depended on privacy:
 
-1. **A proxy we own** — this. The module path is answered by us and read from the
-   forge. One change in the client, no credential in the build, and module
-   identity is untouched.
+- **Authority** — the forge answers for our module names, so a build does not
+  depend on github.com being up, willing, or still holding the repository.
+- **Retention** — one cache, nothing prunes it, so a module stays reachable
+  because we decided it does.
+
+`github.com/hanzoai/s3-go` is the whole argument in one line: 404 on GitHub,
+alive on the forge, and our builds only kept working because a third-party cache
+happened to still hold it.
+
+Read anything below as serving those two. Nothing here is a privacy mechanism.
+
+## Why a proxy rather than the alternatives
+
+1. **A proxy we own** — this. The module path is answered by us and read from
+   the forge. One change in the client and module identity is untouched.
 2. **Migrate the module paths** to a git.hanzo.ai host. Cleanest in principle,
    and the blast radius is why it is not the answer: 190 module definitions, 124
    dependent `go.mod` files, ~21,500 importing `.go` files in the hanzo tree
-   alone, plus 33 required paths that are not even checked out locally.
+   alone, plus 33 required paths not even checked out locally.
 3. **A machine credential at GitHub.** Keeps the dependency, only changes whose
-   name is on it. It is the only option that serves genuinely public consumers of
-   our modules — which is what the GitHub mirror is for — but it does nothing for
-   our own builds.
+   name is on it. It does nothing for authority and nothing for retention.
 
 The forge already had half of (1): `routers/api/packages/goproxy` in `hanzoai/git`
-is a read-through cache of the public ecosystem with a server-side private-path
-guard, and it is live. It cannot be the build-time proxy, for two reasons worth
-keeping: its auth is package-scoped (the build's forge token is
-`write:repository`, and broadening it is not on the table), and it is a registry
-of what has been PUBLISHED to it — it has no way to resolve a module from the
-repository whose source it is holding. Those are different jobs.
+is a read-through cache of the public ecosystem and it is live. It cannot be the
+build-time proxy, and the reason is worth keeping: it is a registry of what has
+been PUBLISHED to it, with no way to resolve a module from the repository whose
+source it is already holding. Different jobs.
 
-## The boundary that matters
+## The 404 rule — the load-bearing one
+
+In the GOPROXY protocol 404 means "ask the next proxy". The next proxy resolves
+`github.com/hanzoai/x` the way its name reads: from github.com. So a 404 inside
+our namespaces does not fail — it silently returns resolution to the host we
+exist so we need not depend on, and **the build goes green having used it**. A
+false success is worse than a failure because nobody looks at it.
+
+`TestOurFailuresNeverFallThrough` holds this. Do not "fix" it to return 404. It
+was written for a privacy reason that has since evaporated; the reason above is
+the one that survives, and it is stronger.
+
+## Checksums
+
+Everything is checked against the public transparency log by default, ours
+included, and that check is worth more for our modules than for anyone else's:
+this proxy is the one place that reads the forge while the log remembers what
+was published under the same name. A forge copy whose bytes disagree with the
+published tag is caught here or not at all.
+
+`UNLOGGED` is the exception list and it is EMPTY by default. A module the log has
+never seen cannot be checked against it and asking fails the fetch, so an entry
+says "the log has nothing to say about this name" — not "do not verify it". The
+caller's `go.sum` still pins it either way. Entries leave the list as their
+repositories are published; when it is empty for good, delete the variable.
 
 `GOPRIVATE` is the wrong knob and reaching for it is the original bug. It means
-"bypass the proxy AND the checksum database", and bypassing the proxy is exactly
-what sends the toolchain to github.com. Clients set `GOPROXY` and `GONOSUMDB`
-and nothing else.
+"bypass the proxy AND the log", and bypassing the proxy is what sends the
+toolchain to github.com. A test asserts the server never sets it.
 
-Skipping the public checksum database for our namespaces is not skipping
-verification. `go.sum` pins every module, ours included, and is checked against
-the bytes served here. The proof is that the hashes this proxy produces are
-byte-identical to the ones committed when GitHub served the same tags.
+## The forge credential is also a transition value
 
-## The 404 rule
+Public forge repositories are readable anonymously — verified, not assumed:
 
-In the GOPROXY protocol 404 means "ask the next proxy". Inside our namespaces a
-404 would therefore hand an unreleased repository's name to a public service. So
-a failure inside our namespaces is 502 and the walk ends. `TestPrivateFailure
-NeverFallsThrough` is the test that holds this; do not "fix" it to return 404.
+```sh
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://git.hanzo.ai/hanzoai/ci.git
+```
 
-## Retention
+So `FORGE_TOKEN` is only needed for source the forge will not serve
+anonymously, and empty is a working configuration. The URL rewrite happens with
+or without it — reaching the forge and being allowed to read a given repository
+there are different questions, and dropping the rewrite would send our names
+back to github.com.
 
-The module cache is the retention mechanism and nothing prunes it. Give `ROOT`
-durable storage. This is not an optimization: `github.com/hanzoai/s3-go` is
-required by `hanzoai/cloud`, `gateway` and `amqp`, and its GitHub repository no
-longer exists. It resolves here because the forge holds it.
+## Retention has a limit, and it is stated in the README
 
-Two others are in the same state and this proxy does NOT save them, because
-nothing holds them: `hanzoai/gh` (required by `docdb/tools`) and `hanzoai/xfail`
-(required by `docdb/integration`) are absent from github.com, from the public
-proxy, and from the forge. They need a source before any proxy can serve them;
-their likely upstreams are `FerretDB/gh` and `FerretDB/xfail`, both public.
+For our namespaces the guarantee is total, because the forge is the source
+rather than a copy of one. For third-party modules it covers **what has already
+been served and nothing never fetched**. Do not let it be written as more than
+that.
+
+Two modules are beyond saving by any proxy: `hanzoai/gh` (required by
+`docdb/tools`) and `hanzoai/xfail` (required by `docdb/integration`) are absent
+from github.com, from the public proxy, and from the forge. They need a source
+before anything can serve them; the likely upstreams are `FerretDB/gh` and
+`FerretDB/xfail`, both public.
+
+## Build
+
+`go 1.26` in go.mod is a floor of 1.26.0, and the Dockerfile pins
+`golang:1.26.5-bookworm` — above the floor and hermetic. The `gover` gate in
+`hanzoai/ci` read a two-part directive as demanding the newest patch and refused
+that pairing; fixed in ci v1.0.75.

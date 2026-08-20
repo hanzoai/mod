@@ -79,9 +79,10 @@ func newProxy(t *testing.T) *Proxy {
 	}
 }
 
-// A public module we cannot resolve gets 404, this protocol's "ask the next
-// proxy". There is nothing in a public path to protect.
-func TestPublicFallsThrough(t *testing.T) {
+// A module we are not authoritative for gets 404, this protocol's "ask the next
+// proxy". Continuing the walk is the right answer for a name we do not answer
+// for.
+func TestOtherPeoplesModulesFallThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	newProxy(t).ServeHTTP(w, httptest.NewRequest("GET", "/github.com/google/uuid/@v/list", nil))
 	if w.Code != http.StatusNotFound {
@@ -101,22 +102,26 @@ func TestSourceFollowsNamespace(t *testing.T) {
 	}
 }
 
-// The disclosure boundary. A module inside our namespaces that we could not
-// resolve must NOT answer 404: 404 sends the go command to the next proxy
-// carrying the module path, and the next proxy is public. The path of an
-// unreleased repository is exactly what must not travel.
-func TestPrivateFailureNeverFallsThrough(t *testing.T) {
+// The authority boundary, and the single most important behaviour here. A
+// module inside our namespaces that we could not resolve must NOT answer 404.
+//
+// 404 means "ask the next proxy", and the next proxy resolves
+// github.com/hanzoai/x from github.com — so a 404 does not fail the build, it
+// quietly sends it back to the host this service exists so we need not depend
+// on, and the build goes green having used it. This holds whether or not the
+// module is public: it is about which source answered, not who may read it.
+func TestOurFailuresNeverFallThrough(t *testing.T) {
 	for _, path := range []string{
-		"/github.com/hanzoai/unreleased/@v/list",
-		"/github.com/hanzoai/unreleased/@latest",
-		"/github.com/hanzoai/unreleased/@v/v1.0.0.info",
-		"/github.com/hanzoai/unreleased/@v/v1.0.0.mod",
-		"/github.com/hanzoai/unreleased/@v/v1.0.0.zip",
+		"/github.com/hanzoai/absent/@v/list",
+		"/github.com/hanzoai/absent/@latest",
+		"/github.com/hanzoai/absent/@v/v1.0.0.info",
+		"/github.com/hanzoai/absent/@v/v1.0.0.mod",
+		"/github.com/hanzoai/absent/@v/v1.0.0.zip",
 	} {
 		w := httptest.NewRecorder()
 		newProxy(t).ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code == http.StatusNotFound || w.Code == http.StatusGone {
-			t.Errorf("%s answered %d — the go command would carry this path to the public proxy", path, w.Code)
+			t.Errorf("%s answered %d — the go command would resolve this from github.com and call it a success", path, w.Code)
 		}
 		if w.Code != http.StatusBadGateway {
 			t.Errorf("%s = %d want %d", path, w.Code, http.StatusBadGateway)
@@ -129,7 +134,7 @@ func TestPrivateFailureNeverFallsThrough(t *testing.T) {
 func TestErrorsCarryNoCredential(t *testing.T) {
 	p := newProxy(t)
 	w := httptest.NewRecorder()
-	p.ServeHTTP(w, httptest.NewRequest("GET", "/github.com/hanzoai/unreleased/@v/list", nil))
+	p.ServeHTTP(w, httptest.NewRequest("GET", "/github.com/hanzoai/absent/@v/list", nil))
 	if strings.Contains(w.Body.String(), p.Token) {
 		t.Fatalf("response carries the credential: %s", w.Body.String())
 	}
@@ -155,10 +160,54 @@ func TestCredentialTravelsInTheEnvironment(t *testing.T) {
 	if rule != want {
 		t.Fatalf("rewrite rule = %q want %q", rule, want)
 	}
-	// GOPRIVATE keeps the public checksum database out of the resolution of a
-	// module it cannot have seen. go.sum still pins every one of them.
-	if !has(env, "GOPRIVATE=github.com/hanzoai") || !has(env, "GONOSUMDB=github.com/hanzoai") {
-		t.Fatalf("private namespaces not exempted from the public sum database: %v", env)
+}
+
+// Reaching the forge and being allowed to read a given repository there are
+// different questions. With no credential the rewrite still happens — otherwise
+// the name resolves from github.com, which is the thing this must never do.
+func TestNoCredentialStillPointsAtTheForge(t *testing.T) {
+	p := newProxy(t)
+	p.Token = ""
+	if got, want := p.dial(), "https://forge.invalid"; got != want {
+		t.Fatalf("dial = %q want %q", got, want)
+	}
+	if !has(p.env(true), "GIT_CONFIG_KEY_0=url.https://forge.invalid/hanzoai/.insteadOf") {
+		t.Fatalf("no credential dropped the rewrite, so our names would resolve from github.com: %v", p.env(true))
+	}
+}
+
+// The public transparency log is asked about everything by default, ours
+// included — it is the only check that sees the forge and the published record
+// of the same name together. Unlogged is an exception list, and an empty one is
+// the resting state.
+func TestEverythingVerifiesAgainstThePublicLog(t *testing.T) {
+	p := newProxy(t)
+	if !has(p.env(true), "GONOSUMDB=") {
+		t.Errorf("our modules were exempted from the public log with nothing declared unlogged: %v", p.env(true))
+	}
+	p.Unlogged = []string{"github.com/hanzoai/sealed"}
+	if !has(p.env(true), "GONOSUMDB=github.com/hanzoai/sealed") {
+		t.Errorf("declared unlogged path not exempted: %v", p.env(true))
+	}
+	// GOPRIVATE means "bypass the proxy AND the log". Bypassing the proxy is
+	// what reaches github.com, so this name must not appear here or in any
+	// client's environment.
+	for _, e := range p.env(true) {
+		if strings.HasPrefix(e, "GOPRIVATE=") {
+			t.Errorf("GOPRIVATE is set (%q) — it bypasses the proxy, which is the one thing that must not happen", e)
+		}
+	}
+}
+
+// An unset list is no paths. Splitting "" yields one empty string, and an empty
+// path is a prefix of every module — the list's meaning exactly inverted.
+func TestEmptyListIsNoPaths(t *testing.T) {
+	if got := paths(""); len(got) != 0 {
+		t.Errorf(`paths("") = %v want empty`, got)
+	}
+	got := paths("github.com/hanzoai/, , github.com/luxfi")
+	if len(got) != 2 || got[0] != "github.com/hanzoai" || got[1] != "github.com/luxfi" {
+		t.Errorf("paths = %v want [github.com/hanzoai github.com/luxfi]", got)
 	}
 }
 
