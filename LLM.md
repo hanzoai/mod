@@ -95,6 +95,56 @@ In the cluster the value comes from KMS at `hanzo:/deploy/FORGE_TOKEN`, synced
 by the `git-hanzo-ai-token-kms-sync` KMSSecret into `git-hanzo-ai-token/token`.
 It carries write scope and only needs read.
 
+## Who actually needs this, measured
+
+Of the 157 module versions our namespaces contribute across 22 Go repositories,
+**155 are served by the public proxy and verified by the public log**. Two are
+not, and they are the entire reason any repository cannot build without this
+service:
+
+| module | not on the public proxy | needed by |
+|---|---|---|
+| `github.com/hanzoai/thinking v0.1.1` | 404 | `zen`, `zen-gateway` |
+| `github.com/hanzoai/voice` (pseudo-version) | 404 | `ai` |
+
+Both resolve from the forge, and both are in `UNLOGGED` because the checksum log
+has never seen them.
+
+So **three** repositories need the proxy and **nineteen** carry a GitHub
+credential for a module graph that is already entirely public: adnexus, base,
+cloud, commerce, gateway, git, iam, ingress, kms, mcp-gateway, notify, o11y,
+playground, s3-csi, superbase, team-go, visor, vm, world.
+
+Two traps in measuring this again. `exclude` lines are not requires —
+`exclude github.com/luxfi/genesis v1.5.21` appears in four go.mod files for a
+version that exists nowhere, and reading it as a dependency invents four
+repositories that need a proxy. And matching a repository name as a substring
+makes `zen-gateway` answer for `gateway`.
+
+`github.com/hanzoai/s3-go` deserves its own line: the public proxy DOES still
+serve it, so nothing is failing today. Its GitHub repository is gone, so what
+holds our builds up is a cache we do not own and cannot refill.
+
+## Reachability: test gates yes, image builds no
+
+Go modules are fetched at two moments and only one of them can reach this.
+
+- **Test gates** run on the git-runner in the `hanzo` namespace. Proven: a pod
+  there resolves through the proxy with no GitHub credential present.
+- **Image builds** run in buildkitd in `hanzo-build`, and that namespace is
+  labelled `hanzo.ai/component: build-isolated`. Traffic to `hanzo` times out to
+  the Service AND to the pod IP, so it is neither DNS nor the Service.
+
+The namespace policy admits `10.124.0.0/16` and `10.125.0.0/16` and every pod
+involved sits in `10.125.0.0/16`, which looks like an allow and is not: Cilium
+resolves an `ipBlock` against entities outside the cluster, and pod-to-pod
+traffic carries an identity rather than an address. Naming the namespace is the
+right shape and is what `mod`'s own policy now does — but it is NOT sufficient
+here. `allow-build-to-s3` names `hanzo-build` the same way and `hanzo-build`
+cannot reach `s3:9000` either, so the isolation is enforced below these
+policies. Reaching it from a build is an owner decision about that boundary, not
+a rule to add.
+
 ## Retention has a limit, and it is stated in the README
 
 For our namespaces the guarantee is total, because the forge is the source
