@@ -120,8 +120,31 @@ kms, notify, o11y, playground, s3-csi, superbase, team-go, visor, vm, world.
 
 Those eighteen do not need this service at all. Their whole graph is on the
 public proxy, so the credential simply comes out and the checksum log starts
-verifying what was being fetched around it. `iam` and `s3-csi` are done and
-green; the rest are the same edit.
+verifying what was being fetched around it. Six are done — iam, s3-csi,
+playground, notify, world, team-go — and carry zero credential-bearing lines;
+the remaining twelve are the same edit.
+
+Preflight each one before pushing, with the command the build actually runs:
+
+```sh
+GOFLAGS=-mod=mod GOWORK=off GOPROXY='https://proxy.golang.org,direct' \
+GOPRIVATE=none.invalid GONOPROXY=none.invalid GONOSUMDB=none.invalid \
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
+  go mod download
+```
+
+Every part of that is load-bearing. `GOPRIVATE=` EMPTY does not clear it — Go
+reads an empty environment variable as unset and falls back to `go env`'s stored
+value, which on a developer machine already lists our namespaces, so the
+preflight sends our modules direct and "fails" for a reason that exists only on
+that laptop. It needs a non-matching value. `GIT_CONFIG_GLOBAL=/dev/null` is the
+same trap as the anonymity check above: `-c credential.helper=` leaves the
+system helper in place. And use `go mod download`, not `go list -m all` — the
+latter walks the unpruned graph and reports modules a build never loads.
+
+CI passing is NOT this evidence. The shared pipeline still injects a GitHub
+credential for every job, so a converted repo can go green on the credential it
+was supposed to stop needing.
 
 Three traps in measuring this again, all of which produced a wrong answer first:
 
