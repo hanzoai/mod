@@ -1,0 +1,47 @@
+# mod — the ONE file that says how this repo builds, gates and ships.
+#
+# The only workflow is `.hanzo/workflows/cicd.yml`, which imports hanzoai/ci.
+# Everything real is here, and platform.hanzo.ai reads this same file.
+
+# GOWORK=off so a go.work in a parent directory cannot change which modules
+# resolve — CI must read this repo's go.mod and nothing else.
+test:
+  - name: go-build
+    run: |
+      set -e
+      export GOWORK=off CGO_ENABLED=0
+      go build ./...
+
+  - name: go-vet
+    run: |
+      set -e
+      export GOWORK=off CGO_ENABLED=0
+      go vet ./...
+
+  - name: go-test
+    # The tests that matter here answer one question: what does this proxy tell
+    # the go command to do when it cannot resolve something. A 404 inside our
+    # namespaces sends the go command to the next proxy carrying the module
+    # path, and the next proxy is public — so the boundary is asserted, not
+    # assumed. They need no network: the fixture points at a forge that cannot
+    # resolve, which is exactly the failing case under test.
+    run: |
+      set -e
+      export GOWORK=off CGO_ENABLED=0
+      go test -count=1 ./...
+
+version: 0.1.0
+
+images:
+  - name: mod
+    context: .
+    dockerfile: Dockerfile
+    repo: ghcr.io/hanzoai/mod
+    # amd64 only: the cluster has no arm64 nodes. Add linux/arm64 when
+    # something pulls it.
+    platforms: [linux/amd64]
+
+# No `deploy:`. Which build runs is a reviewed change in hanzoai/universe,
+# synced by cd.hanzo.ai. Every Go build in the estate resolves through this
+# service, so "which binary is answering for our module names" is not something
+# that should move as a CI side effect.

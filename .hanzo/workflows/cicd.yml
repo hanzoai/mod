@@ -1,0 +1,25 @@
+name: CI/CD
+
+# The caller, and deliberately nothing else: triggers plus the import. All real
+# config is the repo-root hanzo.yml, which platform.hanzo.ai reads too.
+#
+# `.hanzo/workflows`, NOT `.github/workflows`: the `git-runner` StatefulSet
+# registers against the forge only, and that is the pool advertising the
+# `hanzo-build-linux-amd64` label. A job asking for it on github.com is never
+# claimed — it waits out the timeout rather than failing.
+
+on:
+  push:
+    branches: [main]
+    # A `v*` tag is a RELEASE and publishes an image named after it, verbatim.
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cicd:
+    uses: hanzoai/ci/.hanzo/workflows/build.yml@v1
+    secrets: inherit
