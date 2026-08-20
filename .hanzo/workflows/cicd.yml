@@ -21,9 +21,10 @@ concurrency:
 
 jobs:
   cicd:
-    # Pinned to the immutable tag, not the `v1` alias, because this repo is the
-    # canary for ci v1.0.75 — the release that stopped `gover` reading a
-    # two-part `go` directive as a demand for the newest patch. The alias moves
-    # once this run is green.
-    uses: hanzoai/ci/.hanzo/workflows/build.yml@v1.0.75
+    # `@v1`, and pinning an immutable tag here would be worse than useless: this
+    # forge leaves GITHUB_WORKFLOW_REF unset, so build.yml clones its own bin/
+    # tools from `v1` whatever the caller asked for. A caller pinned elsewhere
+    # gets that build.yml against v1's tools — the skew the pipeline's own tool
+    # check exists to catch. One ref or none.
+    uses: hanzoai/ci/.hanzo/workflows/build.yml@v1
     secrets: inherit

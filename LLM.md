@@ -97,7 +97,19 @@ before anything can serve them; the likely upstreams are `FerretDB/gh` and
 
 ## Build
 
-`go 1.26` in go.mod is a floor of 1.26.0, and the Dockerfile pins
-`golang:1.26.5-bookworm` — above the floor and hermetic. The `gover` gate in
-`hanzoai/ci` read a two-part directive as demanding the newest patch and refused
-that pairing; fixed in ci v1.0.75.
+go.mod says `go 1.26.5` and the Dockerfile pins `golang:1.26.5-bookworm`. This
+is a binary — nothing imports it — so the directive constrains only its own
+build, and naming the patch states the toolchain it is actually built and tested
+with instead of a floor it happens to clear.
+
+Separately: `gover` in `hanzoai/ci` read a two-part directive like `go 1.26` as
+a demand for the newest patch of that minor, so it refused `golang:1.26.5` — an
+image that builds it. Sixteen repos write a two-part directive, `mcp-gateway`
+among them. Fixed on ci main (`6b1ea4f`) with three cases covering the floor;
+that fix reaches the fleet when `v1` next moves, which is blocked on ci main's
+`site` gate (four failures from `1177811`, unrelated to this).
+
+The caller pins `@v1` and must keep doing so. This forge leaves
+`GITHUB_WORKFLOW_REF` unset, so `build.yml` clones its own `bin/` tools from
+`v1` no matter which ref the caller named — pinning an immutable tag here gets
+that build.yml against `v1`'s tools, which is skew, not a canary.
