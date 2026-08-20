@@ -97,8 +97,8 @@ It carries write scope and only needs read.
 
 ## Who actually needs this, measured
 
-Of the 157 module versions our namespaces contribute across 22 Go repositories,
-**155 are served by the public proxy and verified by the public log**. Two are
+Of the 167 module versions our namespaces contribute across 22 Go repositories,
+**164 are served by the public proxy and verified by the public log**. Three are
 not, and they are the entire reason any repository cannot build without this
 service:
 
@@ -106,20 +106,32 @@ service:
 |---|---|---|
 | `github.com/hanzoai/thinking v0.1.1` | 404 | `zen`, `zen-gateway` |
 | `github.com/hanzoai/voice` (pseudo-version) | 404 | `ai` |
+| `github.com/hanzoai/zrok/v2 v2.0.1` | 404 | `mcp-gateway` |
 
-Both resolve from the forge, and both are in `UNLOGGED` because the checksum log
-has never seen them.
+All three resolve from the forge, and all three are in `UNLOGGED` because the
+checksum log has never seen them. Verified against the running service with no
+GitHub credential present: each answers `OK` through the proxy and fails with
+`GOPROXY=direct`.
 
-So **three** repositories need the proxy and **nineteen** carry a GitHub
-credential for a module graph that is already entirely public: adnexus, base,
-cloud, commerce, gateway, git, iam, ingress, kms, mcp-gateway, notify, o11y,
-playground, s3-csi, superbase, team-go, visor, vm, world.
+So **four** repositories need the proxy — ai, mcp-gateway, zen, zen-gateway —
+and **eighteen** carry a GitHub credential for a module graph that is already
+entirely public: adnexus, base, cloud, commerce, gateway, git, iam, ingress,
+kms, notify, o11y, playground, s3-csi, superbase, team-go, visor, vm, world.
 
-Two traps in measuring this again. `exclude` lines are not requires —
-`exclude github.com/luxfi/genesis v1.5.21` appears in four go.mod files for a
-version that exists nowhere, and reading it as a dependency invents four
-repositories that need a proxy. And matching a repository name as a substring
-makes `zen-gateway` answer for `gateway`.
+Those eighteen do not need this service at all. Their whole graph is on the
+public proxy, so the credential simply comes out and the checksum log starts
+verifying what was being fetched around it. `iam` and `s3-csi` are done and
+green; the rest are the same edit.
+
+Three traps in measuring this again, all of which produced a wrong answer first:
+
+- **`/vN` paths.** A pattern that runs `<path> <version>` skips
+  `github.com/hanzoai/zrok/v2 v2.0.1` entirely. Thirteen modules were invisible
+  this way and one of them was the only blocker for `mcp-gateway`.
+- **`exclude` is not `require`.** `exclude github.com/luxfi/genesis v1.5.21`
+  appears in four go.mod files for a version that exists nowhere; reading it as
+  a dependency invents four repositories that need a proxy.
+- **Substring repository names.** `zen-gateway` answers for `gateway`.
 
 `github.com/hanzoai/s3-go` deserves its own line: the public proxy DOES still
 serve it, so nothing is failing today. Its GitHub repository is gone, so what
